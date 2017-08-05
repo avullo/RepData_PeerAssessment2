@@ -1,0 +1,350 @@
+---
+title: "Severe Weather Events in the US: Exploring Public Health and Economic Consequences"
+output:
+  html_document:
+    keep_md: true
+---
+
+# Synopsis
+
+Storms and other severe weather events can cause both public health and economic problems for communities and municipalities. Many severe events can result in fatalities, injuries, and property damage, and preventing such outcomes to the extent possible is a key concern. The objective of this analysis is to determine which types of events are the most harmful to population health and which ones have the greatest economic consequences.
+
+We have analysed data from the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database which tracks characteristics of major storms and weather events in the United States. The analysis has been conducted for the events occurring between 1996 and 2011, which represents the time period where all 48 official event types have been recorded, with some filtering applied to include only the events causing either health or economic damage and to manually map non standard event types, which exists due to typos, to the standard ones. We've then filtered out varialbles which were not necessary for the analysis, derived some summary descriptions and total figures in terms of fatalities, injuries and property/crop damage grouped by event type.
+
+We've found the most harmful events in terms of human health are tornadoes, excessive heat, floods and lightnings. Besides these, rip currents have a certain impact in terms of fatalities and thunderstorm winds in terms of injuries. In terms of economic damage, floods have major consequences together with strong wind storms. Also, major effects have of storm surge/tides and hail.
+
+# Data Processing
+
+## Getting the Raw Data
+
+From the [Reproducible Research Course website](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2) we obtain data about major storms and weather events in the United States, including estimates of any fatalities, injuries, and property damage.
+
+```{r}
+fileUrl <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+inputFile <- "StormData.csv.bz2"
+if(!file.exists(inputFile)) {
+  download.file(fileUrl, destfile = inputFile, method = "curl")
+}
+```
+
+## Reading the Data
+
+We first read the data, including headers, from the raw compressed text file. The data is a CSV file with missing values coded as blank fields.
+
+```{r,results="hide"}
+library(dplyr)
+library(lubridate)
+library(data.table)
+library(stringdist)
+```
+
+```{r, cache = TRUE}
+stormdata <- fread(sprintf("bzcat %s", "StormData.csv.bz2"))
+```
+
+After reading the data we check the dimension and the first few rows:
+
+```{r}
+dim(stormdata)
+head(stormdata)
+```
+
+There are `r nrow(stormdata)` observations in this data set, with `r ncol(stormdata)` variables.
+
+## Filtering Data
+
+The events in the database start in year 1950 and end in 2011. According to [NOAA official documentation](https://www.ncdc.noaa.gov/stormevents/pd01016005curr.pdf) (page 6), there are 48 official event types. However, only a small fraction of these have been consistently recorded across the above time range. As described in the [Storm Events Database Details](https://www.ncdc.noaa.gov/stormevents/details.jsp?type=eventtype), from 1950 through 1954, only tornado events were recorded. From 1955 to 1995, only tornado, thunderstorm wind and hail events have been recorded in the database. Since 1996, all 48 official events are being recorded.
+
+Convert the events start dates, which are strings in the format MM/DD/YYYY HH:MM:SS, to R dates:
+
+```{r}
+stormdata <- stormdata %>% mutate(BGN_DATE = mdy_hms(BGN_DATE))
+```
+
+It is a legitimate goal here to show results comparing all 48 official event types within the same time period. For this reason, we filter out the records previous to 1996:
+
+```{r}
+stormdata <- stormdata %>% filter(year(BGN_DATE) >= 1996)
+```
+
+Ignore the events that do not cause any loss, either in terms of human or physical damage:
+
+```{r}
+stormdata <- stormdata %>% filter(FATALITIES | INJURIES | PROPDMG | CROPDMG)
+```
+
+For each observation, compute the total value for property and crop damage. In order to do that, we need to multiply the values in PROPDMG (resp. CROPDMG) by a value encoded in the corresponding PROPDMGEXP (resp. CROPDMGEXP) varialble, which is alphanumeric. These are the possible codes for the multiplier variables:
+
+```{r}
+unique(stormdata$PROPDMGEXP)
+unique(stormdata$CROPDMGEXP)
+```
+Among all possible alphanumeric codes, after the previous filtering only `r length(unique(stormdata$PROPDMGEXP))` remains, including the empty character: "K", "M", "B" mean respectively thousands, millions and billions. According to [](), the blank character map to a 0 multiplier. We overwrite the property and crop damage variable with their respective total taking into account the multipliers:
+
+```{r}
+totaldmg <- function(dmg, mult) {
+  total = 0
+  if(mult == "K") { total = dmg * 1000 } 
+  else if(mult == "M") { total = dmg * 1e06 } 
+  else if(mult == "B") { total = dmg * 1e09 }
+  total
+}
+stormdata <- 
+  stormdata %>% 
+  rowwise() %>% 
+  mutate(CROPDMG = totaldmg(CROPDMG,CROPDMGEXP), PROPDMG = totaldmg(PROPDMG,PROPDMGEXP))
+```
+
+As mentioned before, there are 48 official event types, which are defined here. 
+
+```{r}
+official_events <-c("ASTRONOMICAL LOW TIDE","AVALANCHE","BLIZZARD","COASTAL FLOOD","COLD/WIND CHILL","DEBRIS FLOW","DENSE FOG","DENSE SMOKE","DROUGHT","DUST DEVIL","DUST STORM","EXCESSIVE HEAT","EXTREME COLD/WIND CHILL","FLASH FLOOD","FLOOD","FROST/FREEZE","FUNNEL CLOUD","FREEZING FOG","HAIL","HEAT","HEAVY RAIN","HEAVY SNOW","HIGH SURF","HIGH WIND","HURRICANE/TYPHOON","ICE STORM","LAKE-EFFECT SNOW","LAKESHORE FLOOD","LIGHTNING","MARINE HAIL","MARINE HIGH WIND","MARINE STRONG WIND","MARINE THUNDERSTORM WIND","RIP CURRENT","SEICHE","SLEET","STORM SURGE/TIDE","STRONG WIND","THUNDERSTORM WIND","TORNADO","TROPICAL DEPRESSION","TROPICAL STORM","TSUNAMI","VOLCANIC ASH","WATERSPOUT","WILDFIRE","WINTER STORM","WINTER WEATHER")
+```
+
+The so far filtered dataset contains much more event types due to typos, e.g leading/trailing spaces, plurals, and non standard nomenclature. A first trivial step is to convert all events to upper case and remove leading and trailing spaces
+
+```{r}
+stormdata <- stormdata %>% mutate(EVTYPE = trimws(toupper(EVTYPE)))
+```
+
+which leaves us with `r length(unique(stormdata$EVTYPE))` event types. 
+
+This is the list of non standard events in the filtered dataset:
+
+```{r}
+events <- sort(unique(stormdata$EVTYPE))
+nostd_events <- events[is.na(match(events, official_events))]
+nostd_events
+```
+
+There are `r length(nostd_events)` non standard events. The majority of these events can be almost directly mapped to the official ones:
+
+```{r}
+blizzard <- c("BLOWING SNOW","EXCESSIVE SNOW","FALLING SNOW/ICE","SNOW SQUALL","SNOW SQUALLS")
+stormdata[stormdata$EVTYPE %in% blizzard,"EVTYPE"] = "BLIZZARD"
+
+coastal_flood <- c("COASTAL FLOODING","COASTAL  FLOODING/EROSION","COASTAL FLOODING/EROSION","EROSION/CSTL FLOOD","TIDAL FLOODING")
+stormdata[stormdata$EVTYPE %in% coastal_flood,"EVTYPE"] = "COASTAL FLOOD"
+
+cold_wind_chill <- c("EXTENDED COLD","EXTREME COLD","EXTREME WINDCHILL","HYPOTHERMIA/EXPOSURE","UNSEASONABLE COLD","UNSEASONABLY COLD")
+stormdata[stormdata$EVTYPE %in% cold_wind_chill,"EVTYPE"] = "COLD/WIND CHILL"
+
+stormdata[stormdata$EVTYPE == "FOG","EVTYPE"] = "DENSE FOG"
+stormdata[stormdata$EVTYPE == "BLOWING DUST","EVTYPE"] = "DUST STORM"
+
+frost_freeze <- c("AGRICULTURAL FREEZE","BLACK ICE","COLD","COLD AND SNOW","COLD TEMPERATURE","COLD WEATHER","DAMAGING FREEZE","EARLY FROST","FREEZE","FREEZING DRIZZLE","FREEZING RAIN","FREEZING SPRAY","FROST","GLAZE","HARD FREEZE","ICE ON ROAD","ICE ROADS","ICY ROADS","LIGHT FREEZING RAIN","SNOW AND ICE")
+stormdata[stormdata$EVTYPE %in% frost_freeze,"EVTYPE"] = "FROST/FREEZE"
+
+flood <- c("ICE JAM FLOOD (MINOR","RIVER FLOOD","RIVER FLOODING","URBAN/SML STREAM FLD")
+stormdata[stormdata$EVTYPE %in% flood,"EVTYPE"] = "FLOOD"
+
+flash_flood <- c("FLASH FLOOD/FLOOD","FLOOD/FLASH/FLOOD")
+stormdata[stormdata$EVTYPE %in% flash_flood,"EVTYPE"] = "FLASH FLOOD"
+
+excessive_heat <- c("HEAT WAVE","RECORD HEAT")
+stormdata[stormdata$EVTYPE %in% excessive_heat,"EVTYPE"] = "EXCESSIVE HEAT"
+
+stormdata[stormdata$EVTYPE == "SMALL HAIL","EVTYPE"] = "HAIL"
+
+heat <- c("HYPERTHERMIA/EXPOSURE","UNSEASONABLY WARM","WARM WEATHER")
+stormdata[stormdata$EVTYPE %in% heat,"EVTYPE"] = "HEAT"
+
+stormdata[stormdata$EVTYPE == "HEAVY SNOW SHOWER","EVTYPE"] = "HEAVY SNOW"
+
+heavy_rain <- c("RAIN","TORRENTIAL RAINFALL","UNSEASONAL RAIN")
+stormdata[stormdata$EVTYPE %in% heavy_rain,"EVTYPE"] = "HEAVY RAIN"
+
+heavy_snow <- c("LATE SEASON SNOW", "RAIN/SNOW","SNOW")
+stormdata[stormdata$EVTYPE %in% heavy_snow,"EVTYPE"] = "HEAVY SNOW"
+
+high_surf <- c("HAZARDOUS SURF","HEAVY RAIN/HIGH SURF", "HEAVY SURF","HEAVY SURF AND WIND","HEAVY SURF/HIGH SURF","HIGH SURF ADVISORY","ROUGH SURF")
+stormdata[stormdata$EVTYPE %in% high_surf,"EVTYPE"] = "HIGH SURF"
+
+hurricane_typhoon <- c("HURRICANE", "HURRICANE EDOUARD","TYPHOON")
+stormdata[stormdata$EVTYPE %in% hurricane_typhoon,"EVTYPE"] = "HURRICANE/TYPHOON"
+
+stormdata[stormdata$EVTYPE == "RIP CURRENTS","EVTYPE"] = "RIP CURRENT"
+stormdata[stormdata$EVTYPE == "MARINE TSTM WIND","EVTYPE"] = "MARINE THUNDERSTORM WIND"
+
+storm_surge_tide <- c("COASTALSTORM","COASTAL STORM","STORM SURGE")
+stormdata[stormdata$EVTYPE %in% storm_surge_tide,"EVTYPE"] = "STORM SURGE/TIDE"
+
+strong_wind <- c("GRADIENT WIND","GUSTY WIND","GUSTY WIND/HAIL","GUSTY WIND/HVY RAIN","GUSTY WIND/RAIN","GUSTY WINDS","HIGH WIND (G40)","HIGH WINDS","NON TSTM WIND","NON-TSTM WIND","WHIRLWIND","WIND","WIND AND WAVE","WIND DAMAGE","WINDS","STRONG WINDS")
+stormdata[stormdata$EVTYPE %in% strong_wind,"EVTYPE"] = "STRONG WIND"
+
+tstm_wind <- c("DOWNBURST","DRY MICROBURST","MICROBURST","TSTM WIND","TSTM WIND 40","TSTM WIND (41)","TSTM WIND 45","TSTM WIND AND LIGHTNING","TSTM WIND (G35)","TSTM WIND (G40)","TSTM WIND G45","TSTM WIND  (G45)","TSTM WIND (G45)","TSTM WIND/HAIL","THUNDERSTORM","THUNDERSTORM WIND (G40)","WET MICROBURST")
+stormdata[stormdata$EVTYPE %in% tstm_wind,"EVTYPE"] = "THUNDERSTORM WIND"
+
+stormdata[stormdata$EVTYPE == "WILD/FOREST FIRE","EVTYPE"] = "WILDFIRE"
+
+winter_weather <- c("WINTER WEATHER MIX","WINTER WEATHER/MIX","WINTRY MIX")
+stormdata[stormdata$EVTYPE %in% winter_weather,"EVTYPE"] = "WINTER WEATHER"
+```
+Here we get the remaining non standard events which cannot be intuitively mapped to the official ones:
+
+```{r}
+events <- sort(unique(stormdata$EVTYPE))
+nostd_events <- events[is.na(match(events, official_events))]
+nostd_events
+```
+
+and whose observations are then filtered out from the dataset:
+
+```{r}
+stormdata <-
+  stormdata %>% filter(!(EVTYPE %in% nostd_events))
+```
+Finally, we retain only the variables necessary for the analysis:
+
+```{r}
+stormdata <-
+  stormdata %>% select(BGN_DATE, STATE, EVTYPE, FATALITIES, INJURIES, PROPDMG, CROPDMG)
+```
+
+# Data Analysis
+
+A quick glimpse into the filtered dataset:
+```{r}
+dim(stormdata)
+head(stormdata)
+```
+The filtered dataset contains `r nrow(stormdata)` each with `r ncol(stormdata)` variables.
+
+These are the recorded event types:
+```{r}
+events <- sort(unique(stormdata$EVTYPE))
+```
+Among the official 48 event types, `r length(events)` are recorded.
+
+```{r}
+official_events[is.na(match(official_events, events))]
+```
+In this dataset, "DEBRIS FLOW" and "SLEET" are not recorded.
+
+In this exploratory and subsequent analysis, for the purpose of investigating health and economic consequences it is more appropriate to split the dataset in two parts: one with only health consequences and one with only economic consequences:
+
+```{r}
+health <- 
+  stormdata %>% filter(FATALITIES !=0 | INJURIES != 0)
+property <-
+  stormdata %>% filter(PROPDMG != 0 | CROPDMG != 0)
+```
+Events generally tend to produce far more economic damage than human loss or injuries:
+```{r}
+nrow(health)
+nrow(property)
+```
+
+This is a summary in terms of consequences to the population:
+```{r}
+summary(health$FATALITIES)
+summary(health$INJURIES)
+```
+On average, there has been less around one casualty/five injuries per event. The distributions seem to be particularly skewed towards low values and the max values indicate the presence of outliers.
+
+```{r}
+health[which.max(health$FATALITIES),]
+```
+The max values both correspond to the [Tornado outbreak sequence of May 21-26 2011](https://en.wikipedia.org/wiki/Tornado_outbreak_sequence_of_May_21%E2%80%9326,_2011).
+
+These are the total number of casualties and injuries:
+```{r}
+sum(health$FATALITIES)
+sum(health$INJURIES)
+```
+
+
+We now transform the data to get the total number of fatalities and injuries grouped by event type:
+```{r}
+health_sum_by_evt <-
+  health %>%
+  group_by(EVTYPE) %>% 
+  summarise(tot_fat = sum(FATALITIES), tot_inj = sum(INJURIES))
+head(health_sum_by_evt)
+```
+
+This is a summary in terms of economic damage:
+```{r}
+summary(property$PROPDMG)
+summary(property$CROPDMG)
+```
+On average, damaging events produce hundreds of thousands of dollars of damage. The vast majority of them do not have major economic consequences. There are notable exceptions:
+
+```{r}
+property[which.max(property$PROPDMG),]
+property[which.max(property$CROPDMG),]
+```
+The former event refers to flooding in California occurred in January 2006. The latter event is Hurricane Katrina which hit the US Gulf Coast in August 2005.
+
+These are the estimates of total values of property and crop damages:
+```{r}
+sum(property$PROPDMG)
+sum(health$CROPDMG)
+```
+
+Overall, since 1996 various events have produces damages for hundreds of billions of dollars on property and around five billions of dollars in agriculture.
+
+Let's transform the data by merging property and crop damange estimates together and grouping by event type:
+```{r}
+eco_sum_by_evt <-
+  property %>%
+  mutate(DMG = PROPDMG + CROPDMG) %>% 
+  group_by(EVTYPE) %>%
+  summarise(tot_dmg = sum(DMG))
+head(eco_sum_by_evt)
+```
+
+# Results
+
+## Which type of events are the most harmful to population health?
+
+We answer the question by separately considering the effects of each event type in terms of fatalities and injuries. Firstly, we determine the deadliest event types: 
+```{r}
+head(health_sum_by_evt %>% arrange(desc(tot_fat)) %>% select(EVTYPE, tot_fat))
+```
+
+This is an overview of the impact of all event types on human loss: 
+```{r, fig.cap='Histogram of the total number of fatalities per event type (1996-2011)'}
+library(ggplot2)
+g <- ggplot(health_sum_by_evt, aes(reorder(EVTYPE,tot_fat), tot_fat)) + 
+  geom_col() + 
+  coord_flip() + 
+  xlab("Event Type") + ylab("Tot Fatalities (1996-2011)")
+plot(g)
+```
+
+Secondly, we derive the event types which are more impactful in terms of injuries to the population:
+```{r}
+head(health_sum_by_evt %>% arrange(desc(tot_inj)) %>% select(EVTYPE, tot_inj))
+```
+
+and similarly we plot an overview of the total injuries for all event types:
+```{r,fig.cap='Histogram of the total number of injuries per event type (1996-2011)'}
+g <- ggplot(health_sum_by_evt, aes(reorder(EVTYPE,tot_inj), tot_inj)) + 
+  geom_col() + 
+  coord_flip() + 
+  xlab("Event Type") + ylab("Tot Injuries (1996-2011)")
+plot(g)
+```
+
+If we consider the combined effect on fatalities and injuries, the **most harmful events are tornadoes, excessive heat, floods and lightnings**. Besides these, **rip currents** have a certain impact in terms of fatalities and **thunderstorm winds** in terms of injuries. 
+
+## Which types of events have the greatest economic consequences?
+
+Let's show the most damaging event types:
+
+```{r}
+head(eco_sum_by_evt %>% arrange(desc(tot_dmg)))
+```
+
+and an overview of the estimates of the damage for each event type:
+
+```{r,fig.cap='Histogram of the total damage per event type (1996-2011)'}
+g <- ggplot(eco_sum_by_evt, aes(reorder(EVTYPE,tot_dmg), tot_dmg)) + 
+  geom_col() + 
+  coord_flip() + 
+  xlab("Event Type") + ylab("Tot Damage in US $ (1996-2011)")
+plot(g)
+```
+
+As with the case of human health, **floods have major (economic) consequences together with strong wind storms (hurricanes/typhoons/tornadoes)**. Also, it turns out that also **storm surge/tides and hail have major effects** in terms of economic damage.
